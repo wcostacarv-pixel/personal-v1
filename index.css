@@ -1,0 +1,968 @@
+import React, { useEffect, useState } from 'react';
+import { supabase } from '../lib/supabase';
+import { useAuth } from '../lib/AuthContext';
+import { Plus, Trash2, Calendar, Dumbbell, CheckCircle2, X, ArrowLeft, Play, Search } from 'lucide-react';
+import { useTraining } from '../lib/TrainingContext';
+import { format } from 'date-fns';
+
+interface Exercise {
+  id: string;
+  name: string;
+  target_muscle: string;
+  equipment?: string;
+  video_url?: string;
+}
+
+interface WorkoutPlan {
+  id: string;
+  name: string;
+  letter: string;
+  muscle_group: string | null;
+  start_date: string;
+  end_date: string | null;
+  total_sessions: number | null;
+  sessions_count: number;
+  status: string;
+  active: boolean;
+  created_at: string;
+}
+
+interface WorkoutPlanExercise {
+  id?: string;
+  exercise_id: string;
+  sets: number;
+  reps: string;
+  weight: string;
+  order_index: number;
+  machine_number: string;
+  exercise?: Exercise;
+}
+
+interface WorkoutManagerProps {
+  studentId: string;
+}
+
+const MUSCLE_GROUPS = ['Peito', 'Costas', 'Pernas', 'Ombros', 'Bíceps', 'Tríceps', 'Abdômen', 'Cardio', 'Full Body'];
+
+export default function WorkoutManager({ studentId }: WorkoutManagerProps) {
+  const { user } = useAuth();
+  const { startTraining, isTrainingActive } = useTraining();
+  
+  const [workoutPlans, setWorkoutPlans] = useState<WorkoutPlan[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [activeLetter, setActiveLetter] = useState('A');
+  
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [currentStep, setCurrentStep] = useState(1);
+  const [isLetterLocked, setIsLetterLocked] = useState(false);
+  const [isQuickExerciseModalOpen, setIsQuickExerciseModalOpen] = useState(false);
+  const [quickExerciseIndex, setQuickExerciseIndex] = useState<number | null>(null);
+  const [quickExercise, setQuickExercise] = useState({ 
+    name: '', 
+    target_muscle: 'Peito',
+    equipment: '',
+    video_url: ''
+  });
+  const [availableExercises, setAvailableExercises] = useState<Exercise[]>([]);
+  
+  const [newPlan, setNewPlan] = useState({
+    name: '',
+    letter: 'A',
+    muscle_group: '',
+    start_date: format(new Date(), 'yyyy-MM-dd'),
+    end_date: '',
+    total_sessions: '',
+  });
+  
+  const [planExercises, setPlanExercises] = useState<WorkoutPlanExercise[]>([]);
+  const [viewingPlan, setViewingPlan] = useState<WorkoutPlan | null>(null);
+  const [viewingExercises, setViewingExercises] = useState<WorkoutPlanExercise[]>([]);
+
+  useEffect(() => {
+    if (user && studentId) {
+      fetchStudentPlans();
+      fetchExercises();
+    }
+  }, [user, studentId]);
+
+  const fetchStudentPlans = async () => {
+    setLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from('workout_plans')
+        .select('*')
+        .eq('student_id', studentId)
+        .order('created_at', { ascending: false });
+        
+      if (error) throw error;
+      setWorkoutPlans(data || []);
+    } catch (error) {
+      console.error('Error fetching plans:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const fetchExercises = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('exercises_library')
+        .select('id, name, target_muscle, equipment, video_url')
+        .eq('professional_id', user?.id)
+        .order('name');
+      if (error) throw error;
+      setAvailableExercises(data || []);
+    } catch (error) {
+      console.error('Error fetching exercises:', error);
+    }
+  };
+
+  const handleAddExerciseToPlan = () => {
+    setPlanExercises([
+      ...planExercises,
+      { exercise_id: '', sets: 3, reps: '10-12', weight: '', machine_number: '', order_index: planExercises.length }
+    ]);
+  };
+
+  const handleUpdatePlanExercise = (index: number, field: keyof WorkoutPlanExercise, value: any) => {
+    const updated = [...planExercises];
+    updated[index] = { ...updated[index], [field]: value };
+    setPlanExercises(updated);
+  };
+
+  const handleRemovePlanExercise = (index: number) => {
+    const updated = planExercises.filter((_, i) => i !== index);
+    setPlanExercises(updated);
+  };
+
+  const handleQuickExerciseCreate = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!user || !quickExercise.name) return;
+
+    try {
+      const { data, error } = await supabase
+        .from('exercises_library')
+        .insert({
+          professional_id: user.id,
+          name: quickExercise.name,
+          target_muscle: quickExercise.target_muscle,
+          equipment: quickExercise.equipment,
+          video_url: quickExercise.video_url
+        })
+        .select()
+        .single();
+
+      if (error) throw error;
+      
+      setAvailableExercises(prev => [...prev, data].sort((a, b) => a.name.localeCompare(b.name)));
+      
+      if (quickExerciseIndex !== null) {
+        const updated = [...planExercises];
+        updated[quickExerciseIndex] = {
+          ...updated[quickExerciseIndex],
+          exercise_id: data.id
+        };
+        setPlanExercises(updated);
+      } else {
+        setPlanExercises(prev => [
+          ...prev,
+          { exercise_id: data.id, sets: 3, reps: '10-12', weight: '', machine_number: '', order_index: prev.length }
+        ]);
+      }
+
+      setIsQuickExerciseModalOpen(false);
+      setQuickExerciseIndex(null);
+      setQuickExercise({ name: '', target_muscle: 'Peito', equipment: '', video_url: '' });
+      alert('Exercício cadastrado com sucesso!');
+    } catch (error) {
+      console.error('Error creating quick exercise:', error);
+      alert('Erro ao cadastrar exercício rápido.');
+    }
+  };
+
+  const handleCreatePlan = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!user || !studentId) return;
+    
+    if (planExercises.length === 0) {
+      alert('Adicione pelo menos um exercício à ficha.');
+      return;
+    }
+    
+    if (planExercises.some(ex => !ex.exercise_id)) {
+      alert('Selecione um exercício para todos os itens da ficha.');
+      return;
+    }
+
+    try {
+      // 1. Set other plans with SAME LETTER to archived
+      await supabase
+        .from('workout_plans')
+        .update({ status: 'archived', active: false })
+        .eq('student_id', studentId)
+        .eq('professional_id', user.id)
+        .eq('letter', newPlan.letter);
+
+      // 2. Create Workout Plan
+      const { data: planData, error: planError } = await supabase
+        .from('workout_plans')
+        .insert({
+          professional_id: user.id,
+          student_id: studentId,
+          name: newPlan.name,
+          letter: newPlan.letter,
+          muscle_group: newPlan.muscle_group,
+          start_date: newPlan.start_date,
+          end_date: newPlan.end_date || null,
+          total_sessions: newPlan.total_sessions ? parseInt(newPlan.total_sessions) : null,
+          status: 'active',
+          active: true
+        })
+        .select()
+        .single();
+
+      if (planError) throw planError;
+
+      // 3. Add Exercises
+      const exercisesToInsert = planExercises.map((ex, index) => ({
+        workout_plan_id: planData.id,
+        exercise_id: ex.exercise_id,
+        professional_id: user.id,
+        letter: newPlan.letter,
+        muscle_group: newPlan.muscle_group,
+        sets: ex.sets,
+        reps: ex.reps,
+        weight: ex.weight,
+        machine_number: ex.machine_number,
+        order_index: index
+      }));
+
+      const { error: exercisesError } = await supabase
+        .from('workout_plan_exercises')
+        .insert(exercisesToInsert);
+
+      if (exercisesError) throw exercisesError;
+
+      setIsModalOpen(false);
+      setNewPlan({
+        name: '',
+        letter: 'A',
+        muscle_group: '',
+        start_date: format(new Date(), 'yyyy-MM-dd'),
+        end_date: '',
+        total_sessions: '',
+      });
+      setPlanExercises([]);
+      await fetchStudentPlans();
+      setActiveLetter(newPlan.letter);
+      handleViewPlan(planData);
+      
+    } catch (error: any) {
+      console.error('Error creating workout plan:', error);
+      alert('Erro ao criar ficha de treino.');
+    }
+  };
+
+  const handleReactivatePlan = async (planId: string) => {
+    if (!planId) return;
+    if (!window.confirm('Deseja reativar esta ficha? A ficha atual será inativada.')) return;
+    
+    try {
+      const plan = workoutPlans.find(p => p.id === planId);
+      if (!plan) return;
+
+      await supabase
+        .from('workout_plans')
+        .update({ status: 'inactive', active: false })
+        .eq('student_id', studentId)
+        .eq('professional_id', user?.id)
+        .eq('letter', plan.letter)
+        .eq('status', 'active');
+
+      await supabase
+        .from('workout_plans')
+        .update({ status: 'active', active: true })
+        .eq('id', planId)
+        .eq('professional_id', user?.id);
+        
+      alert('Ficha reativada com sucesso!');
+      await fetchStudentPlans();
+    } catch (error) {
+      console.error('Error reactivating plan:', error);
+      alert('Erro ao reativar ficha.');
+    }
+  };
+
+  const handleCompletePlan = async (planId: string) => {
+    if (!planId) return;
+    if (!window.confirm('Deseja finalizar esta ficha? Ela será movida para o histórico.')) return;
+    
+    try {
+      const { data: planData } = await supabase
+        .from('workout_plans')
+        .select('sessions_count')
+        .eq('id', planId)
+        .single();
+
+      const currentCount = planData?.sessions_count || 0;
+
+      await supabase
+        .from('workout_plans')
+        .update({ 
+          status: 'completed', 
+          active: false,
+          sessions_count: currentCount + 1
+        })
+        .eq('id', planId)
+        .eq('professional_id', user?.id);
+        
+      alert('Ficha concluída com sucesso!');
+      await fetchStudentPlans();
+    } catch (error) {
+      console.error('Error completing plan:', error);
+      alert('Erro ao concluir ficha.');
+    }
+  };
+
+  const handleDeletePlan = async (planId: string) => {
+    if (!planId) return;
+    if (!window.confirm('Tem certeza que deseja excluir esta ficha e todos os exercícios dela?')) return;
+    try {
+      // CASCADE will handle workout_plan_exercises
+      const { error } = await supabase
+        .from('workout_plans')
+        .delete()
+        .eq('id', planId)
+        .eq('professional_id', user?.id);
+        
+      if (error) throw error;
+      
+      alert('Ficha excluída com sucesso!');
+      await fetchStudentPlans();
+    } catch (error) {
+      console.error('Error deleting plan:', error);
+      alert('Erro ao excluir ficha.');
+    }
+  };
+
+  const handleViewPlan = async (plan: WorkoutPlan) => {
+    try {
+      const { data, error } = await supabase
+        .from('workout_plan_exercises')
+        .select(`
+          *,
+          exercise:exercises_library(name, target_muscle)
+        `)
+        .eq('workout_plan_id', plan.id)
+        .order('order_index');
+        
+      if (error) throw error;
+      setViewingExercises(data || []);
+      setViewingPlan(plan);
+    } catch (error) {
+      console.error('Error fetching plan exercises:', error);
+      alert('Erro ao carregar exercícios da ficha.');
+    }
+  };
+
+  const handleStartTrainingInternal = async (plan: WorkoutPlan) => {
+    try {
+      const { data, error } = await supabase
+        .from('workout_plan_exercises')
+        .select(`
+          *,
+          exercise:exercises_library(name, target_muscle)
+        `)
+        .eq('workout_plan_id', plan.id)
+        .order('order_index');
+        
+      if (error) throw error;
+      if (!data || data.length === 0) {
+        alert('Esta ficha não possui exercícios cadastrados.');
+        return;
+      }
+      
+      startTraining({
+        id: plan.id,
+        name: plan.name,
+        student_id: studentId
+      }, data);
+    } catch (error) {
+      console.error('Error starting training:', error);
+      alert('Erro ao iniciar treino.');
+    }
+  };
+
+  const hasActivePlanForLetter = workoutPlans.some(p => p.letter === activeLetter && p.active);
+
+  if (loading) {
+    return <div className="text-zinc-400 py-8">Carregando fichas...</div>;
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+        <div>
+          <h2 className="text-xl font-bold text-zinc-100">Fichas de Treino</h2>
+          <p className="text-sm text-zinc-400 mt-1">Gerencie os treinos A, B, C, D e E</p>
+        </div>
+        {!hasActivePlanForLetter && (
+          <button
+            onClick={() => {
+              setNewPlan({ ...newPlan, letter: activeLetter });
+              setIsLetterLocked(true);
+              setCurrentStep(1);
+              setIsModalOpen(true);
+            }}
+            className="w-full md:w-auto bg-lime-400 hover:bg-lime-500 text-zinc-950 font-semibold px-4 py-2 rounded-xl flex items-center justify-center gap-2 transition-colors"
+          >
+            <Plus className="w-5 h-5" />
+            Nova Ficha {activeLetter}
+          </button>
+        )}
+      </div>
+
+      <div className="flex p-1 bg-zinc-950 rounded-xl border border-zinc-800">
+        {['A', 'B', 'C', 'D', 'E'].map((letter) => (
+          <button
+            key={letter}
+            onClick={() => setActiveLetter(letter)}
+            className={`flex-1 py-2.5 text-sm font-bold rounded-lg transition-all ${
+              activeLetter === letter
+                ? 'bg-lime-400 text-zinc-950 shadow-lg shadow-lime-400/20'
+                : 'text-zinc-500 hover:text-zinc-300'
+            }`}
+          >
+            FICHA {letter}
+          </button>
+        ))}
+      </div>
+      
+      <div className="space-y-4">
+        {workoutPlans.filter(p => p.letter === activeLetter).length === 0 ? (
+          <div className="text-center py-12 border-2 border-dashed border-zinc-800 rounded-2xl">
+            <Dumbbell className="w-12 h-12 mx-auto mb-3 text-zinc-700" />
+            <p className="text-zinc-500">Nenhuma ficha {activeLetter} cadastrada.</p>
+            <button
+              onClick={() => {
+                setNewPlan({ ...newPlan, letter: activeLetter });
+                setIsLetterLocked(true);
+                setCurrentStep(1);
+                setIsModalOpen(true);
+              }}
+              className="mt-4 text-lime-400 hover:text-lime-300 font-medium text-sm"
+            >
+              Criar Ficha {activeLetter} agora
+            </button>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {workoutPlans
+              .filter(p => p.letter === activeLetter)
+              .map(plan => (
+              <div key={plan.id} className={`bg-zinc-950 border ${plan.active ? 'border-lime-400/40 shadow-lg shadow-lime-400/5' : 'border-zinc-800'} rounded-xl p-5 flex flex-col gap-4`}>
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                  <div className="flex items-start gap-4">
+                    <div className={`w-12 h-12 rounded-xl flex items-center justify-center shrink-0 border ${
+                      plan.active ? 'bg-lime-400/10 border-lime-400/20 text-lime-400' : 'bg-zinc-900 border-zinc-800 text-zinc-500'
+                    }`}>
+                      <span className="text-xl font-black">{plan.letter}</span>
+                    </div>
+                    <div>
+                      <h3 className="text-lg font-bold text-zinc-100">{plan.name || `Ficha ${plan.letter}`}</h3>
+                      <p className="text-sm text-lime-400 font-medium">{plan.muscle_group || 'Geral'}</p>
+                    </div>
+                  </div>
+                  
+                  <div className="flex items-center gap-3">
+                    {plan.active ? (
+                      <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-lime-400 text-zinc-950 uppercase tracking-wider">
+                        Ativa
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-zinc-800 text-zinc-400 uppercase tracking-wider">
+                        {plan.status === 'completed' ? 'Concluída' : (plan.status === 'inactive' ? 'Inativa' : 'Arquivada')}
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 py-4 border-y border-zinc-800/50">
+                  <div className="space-y-1">
+                    <p className="text-[10px] uppercase font-bold text-zinc-500 tracking-widest">Início</p>
+                    <p className="text-sm text-zinc-300 font-medium">{format(new Date(plan.start_date), "dd/MM/yyyy")}</p>
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-[10px] uppercase font-bold text-zinc-500 tracking-widest">Término</p>
+                    <p className="text-sm text-zinc-300 font-medium">{plan.end_date ? format(new Date(plan.end_date), "dd/MM/yyyy") : '-'}</p>
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-[10px] uppercase font-bold text-zinc-500 tracking-widest">Sessões</p>
+                    <p className="text-sm text-zinc-300 font-medium">
+                      {plan.sessions_count || 0} / {plan.total_sessions || '-'}
+                    </p>
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-[10px] uppercase font-bold text-zinc-500 tracking-widest">Criada em</p>
+                    <p className="text-sm text-zinc-300 font-medium">{format(new Date(plan.created_at), "dd/MM/yyyy")}</p>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center justify-end gap-2 pt-2">
+                  {plan.active && (
+                    <button 
+                      onClick={() => handleStartTrainingInternal(plan)}
+                      disabled={isTrainingActive}
+                      className={`flex-1 md:flex-none px-4 py-2 text-sm font-bold rounded-xl transition-all flex items-center justify-center gap-2 shadow-lg ${
+                        isTrainingActive 
+                          ? 'bg-zinc-800 text-zinc-500 cursor-not-allowed' 
+                          : 'bg-lime-400 hover:bg-lime-500 text-zinc-950 shadow-lime-400/20'
+                      }`}
+                    >
+                      <Play className="w-4 h-4 fill-current" />
+                      {isTrainingActive ? 'Treino em Andamento' : 'Iniciar Treino'}
+                    </button>
+                  )}
+                  
+                  <div className="flex items-center gap-2 w-full md:w-auto">
+                    {!plan.active && (
+                      <button 
+                        onClick={() => handleReactivatePlan(plan.id)}
+                        className="flex-1 md:flex-none px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-100 text-sm font-bold rounded-xl transition-colors"
+                      >
+                        Reativar
+                      </button>
+                    )}
+                    {plan.active && (
+                      <button 
+                        onClick={() => handleCompletePlan(plan.id)}
+                        className="flex-1 md:flex-none px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-100 text-sm font-bold rounded-xl transition-colors"
+                      >
+                        Concluir
+                      </button>
+                    )}
+                    <button 
+                      onClick={() => handleViewPlan(plan)}
+                      className="flex-1 md:flex-none px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-100 text-sm font-bold rounded-xl transition-colors"
+                    >
+                      Exercícios
+                    </button>
+                    <button 
+                      onClick={() => handleDeletePlan(plan.id)}
+                      className="p-2 text-zinc-500 hover:text-red-400 hover:bg-red-400/10 rounded-xl transition-colors"
+                      title="Excluir Ficha"
+                    >
+                      <Trash2 className="w-5 h-5" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Modal Nova Ficha */}
+      {isModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl w-full max-w-4xl max-h-[90vh] flex flex-col shadow-2xl">
+            <div className="flex items-center justify-between p-6 border-b border-zinc-800 shrink-0">
+              <div className="flex items-center gap-3">
+                {currentStep === 2 && (
+                  <button 
+                    onClick={() => setCurrentStep(1)}
+                    className="p-1.5 hover:bg-zinc-800 rounded-lg text-zinc-400 hover:text-zinc-100 transition-colors"
+                  >
+                    <ArrowLeft className="w-5 h-5" />
+                  </button>
+                )}
+                <div>
+                  <h2 className="text-xl font-bold text-zinc-100">Nova Ficha de Treino</h2>
+                  <p className="text-xs text-zinc-500 uppercase font-bold tracking-widest mt-0.5">
+                    Passo {currentStep} de 2: {currentStep === 1 ? 'Dados da Ficha' : 'Exercícios'}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setIsModalOpen(false)}
+                className="text-zinc-400 hover:text-zinc-100 transition-colors"
+              >
+                <X className="w-6 h-6" />
+              </button>
+            </div>
+            
+            <div className="p-6 overflow-y-auto">
+              <form id="plan-form" onSubmit={handleCreatePlan} className="space-y-6">
+                {currentStep === 1 ? (
+                  <div className="space-y-6">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="md:col-span-2">
+                        <label className="block text-sm font-medium text-zinc-400 mb-1.5">Letra da Ficha</label>
+                        <div className="flex gap-2">
+                          {['A', 'B', 'C', 'D', 'E'].map(l => (
+                            <button
+                              key={l}
+                              type="button"
+                              disabled={isLetterLocked}
+                              onClick={() => setNewPlan({...newPlan, letter: l})}
+                              className={`flex-1 py-2 rounded-lg font-bold border transition-all ${
+                                newPlan.letter === l
+                                  ? 'bg-lime-400 border-lime-400 text-zinc-950'
+                                  : 'bg-zinc-900 border-zinc-800 text-zinc-500 hover:border-zinc-600 disabled:opacity-50 disabled:cursor-not-allowed'
+                              }`}
+                            >
+                              {l}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="md:col-span-2">
+                        <label className="block text-sm font-medium text-zinc-400 mb-1.5">Grupo Muscular Alvo</label>
+                        <select
+                          required
+                          value={newPlan.muscle_group}
+                          onChange={(e) => setNewPlan({...newPlan, muscle_group: e.target.value})}
+                          className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3 text-zinc-100 focus:outline-none focus:ring-2 focus:ring-lime-400/50 focus:border-lime-400 transition-all"
+                        >
+                          <option value="">Selecione...</option>
+                          {MUSCLE_GROUPS.map(mg => (
+                            <option key={mg} value={mg}>{mg}</option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div className="md:col-span-2">
+                        <label className="block text-sm font-medium text-zinc-400 mb-1.5">Nome da Ficha (Opcional)</label>
+                        <input
+                          type="text"
+                          value={newPlan.name}
+                          onChange={(e) => setNewPlan({...newPlan, name: e.target.value})}
+                          className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3 text-zinc-100 focus:outline-none focus:ring-2 focus:ring-lime-400/50 focus:border-lime-400 transition-all"
+                          placeholder="Ex: Ficha de Hipertrofia A"
+                        />
+                      </div>
+                      
+                      <div>
+                        <label className="block text-sm font-medium text-zinc-400 mb-1.5">Data de Início</label>
+                        <input
+                          type="date"
+                          required
+                          value={newPlan.start_date}
+                          onChange={(e) => setNewPlan({...newPlan, start_date: e.target.value})}
+                          className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3 text-zinc-100 focus:outline-none focus:ring-2 focus:ring-lime-400/50 focus:border-lime-400 transition-all"
+                        />
+                      </div>
+                      
+                      <div>
+                        <label className="block text-sm font-medium text-zinc-400 mb-1.5">Data de Término (Opcional)</label>
+                        <input
+                          type="date"
+                          value={newPlan.end_date}
+                          onChange={(e) => setNewPlan({...newPlan, end_date: e.target.value})}
+                          className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3 text-zinc-100 focus:outline-none focus:ring-2 focus:ring-lime-400/50 focus:border-lime-400 transition-all"
+                        />
+                      </div>
+                      
+                      <div className="md:col-span-2">
+                        <label className="block text-sm font-medium text-zinc-400 mb-1.5">Total de Sessões (Opcional)</label>
+                        <input
+                          type="number"
+                          min="1"
+                          value={newPlan.total_sessions}
+                          onChange={(e) => setNewPlan({...newPlan, total_sessions: e.target.value})}
+                          className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3 text-zinc-100 focus:outline-none focus:ring-2 focus:ring-lime-400/50 focus:border-lime-400 transition-all"
+                          placeholder="Ex: 12"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between mb-4">
+                      <h3 className="text-lg font-bold text-zinc-100">Exercícios da Ficha</h3>
+                      <button
+                        type="button"
+                        onClick={handleAddExerciseToPlan}
+                        className="text-sm bg-zinc-800 hover:bg-zinc-700 text-zinc-100 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1"
+                      >
+                        <Plus className="w-4 h-4" />
+                        Adicionar Exercício
+                      </button>
+                    </div>
+
+                    <div className="space-y-3">
+                      {planExercises.length === 0 ? (
+                        <div className="text-center py-12 bg-zinc-950 border border-dashed border-zinc-800 rounded-2xl">
+                          <Dumbbell className="w-12 h-12 mx-auto mb-3 text-zinc-800" />
+                          <p className="text-sm text-zinc-500">Nenhum exercício adicionado ainda.</p>
+                          <button
+                            type="button"
+                            onClick={handleAddExerciseToPlan}
+                            className="mt-4 text-lime-400 hover:text-lime-300 font-medium text-sm"
+                          >
+                            Adicionar primeiro exercício
+                          </button>
+                        </div>
+                      ) : (
+                        planExercises.map((ex, index) => (
+                          <div key={index} className="flex flex-col md:flex-row gap-3 items-start md:items-center bg-zinc-950 p-3 rounded-xl border border-zinc-800">
+                            <div className="flex-1 w-full">
+                              <select
+                                required
+                                value={ex.exercise_id}
+                                onChange={(e) => {
+                                  if (e.target.value === 'NEW_EXERCISE') {
+                                    setQuickExerciseIndex(index);
+                                    setIsQuickExerciseModalOpen(true);
+                                  } else {
+                                    handleUpdatePlanExercise(index, 'exercise_id', e.target.value);
+                                  }
+                                }}
+                                className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-zinc-100 focus:outline-none focus:border-lime-400 text-sm"
+                              >
+                                <option value="">Selecione um exercício...</option>
+                                {availableExercises
+                                  .filter(a => !newPlan.muscle_group || a.target_muscle === newPlan.muscle_group)
+                                  .map(a => (
+                                    <option key={a.id} value={a.id}>{a.name}</option>
+                                  ))}
+                                <option value="NEW_EXERCISE" className="text-lime-400 font-bold">+ Cadastrar novo exercício</option>
+                              </select>
+                            </div>
+                            
+                            <div className="flex gap-2 w-full md:w-auto">
+                              <div className="w-20">
+                                <input
+                                  type="text"
+                                  placeholder="Máq"
+                                  value={ex.machine_number || ''}
+                                  onChange={(e) => handleUpdatePlanExercise(index, 'machine_number', e.target.value)}
+                                  className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2 py-2 text-zinc-100 focus:outline-none focus:border-lime-400 text-sm text-center"
+                                />
+                              </div>
+                              <div className="w-16">
+                                <input
+                                  type="number"
+                                  required
+                                  min="1"
+                                  placeholder="Sér"
+                                  value={ex.sets}
+                                  onChange={(e) => handleUpdatePlanExercise(index, 'sets', parseInt(e.target.value))}
+                                  className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2 py-2 text-zinc-100 focus:outline-none focus:border-lime-400 text-sm text-center"
+                                />
+                              </div>
+                              <div className="w-20">
+                                <input
+                                  type="text"
+                                  required
+                                  placeholder="Reps"
+                                  value={ex.reps}
+                                  onChange={(e) => handleUpdatePlanExercise(index, 'reps', e.target.value)}
+                                  className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2 py-2 text-zinc-100 focus:outline-none focus:border-lime-400 text-sm text-center"
+                                />
+                              </div>
+                              <div className="w-24">
+                                <input
+                                  type="text"
+                                  placeholder="Carga"
+                                  value={ex.weight}
+                                  onChange={(e) => handleUpdatePlanExercise(index, 'weight', e.target.value)}
+                                  className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2 py-2 text-zinc-100 focus:outline-none focus:border-lime-400 text-sm"
+                                />
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => handleRemovePlanExercise(index)}
+                                className="p-2 text-zinc-500 hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-colors shrink-0"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                )}
+              </form>
+            </div>
+            
+            <div className="p-6 border-t border-zinc-800 shrink-0 bg-zinc-900/50">
+              <div className="flex gap-3 justify-end">
+                <button
+                  type="button"
+                  onClick={() => setIsModalOpen(false)}
+                  className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-100 font-semibold rounded-xl transition-colors"
+                >
+                  Cancelar
+                </button>
+                {currentStep === 1 ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!newPlan.muscle_group) {
+                        alert('Selecione um grupo muscular.');
+                        return;
+                      }
+                      setCurrentStep(2);
+                    }}
+                    className="px-6 py-2 bg-lime-400 hover:bg-lime-500 text-zinc-950 font-semibold rounded-xl transition-colors flex items-center gap-2"
+                  >
+                    Próximo
+                  </button>
+                ) : (
+                  <button
+                    type="submit"
+                    form="plan-form"
+                    className="px-6 py-2 bg-lime-400 hover:bg-lime-500 text-zinc-950 font-semibold rounded-xl transition-colors flex items-center gap-2"
+                  >
+                    <CheckCircle2 className="w-5 h-5" />
+                    Salvar Ficha
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Cadastro Rápido de Exercício */}
+      {isQuickExerciseModalOpen && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/90 backdrop-blur-sm">
+          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl w-full max-w-md shadow-2xl">
+            <div className="flex items-center justify-between p-6 border-b border-zinc-800">
+              <h3 className="text-lg font-bold text-zinc-100">Cadastrar Novo Exercício</h3>
+              <button onClick={() => setIsQuickExerciseModalOpen(false)} className="text-zinc-400 hover:text-zinc-100">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <form onSubmit={handleQuickExerciseCreate} className="p-6 space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-zinc-400 mb-1.5">Nome do Exercício</label>
+                <input
+                  type="text"
+                  required
+                  autoFocus
+                  value={quickExercise.name}
+                  onChange={(e) => setQuickExercise({...quickExercise, name: e.target.value})}
+                  className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-2 text-zinc-100 focus:outline-none focus:border-lime-400"
+                  placeholder="Ex: Supino Reto"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-zinc-400 mb-1.5">Músculo Alvo</label>
+                  <select
+                    required
+                    value={quickExercise.target_muscle}
+                    onChange={(e) => setQuickExercise({...quickExercise, target_muscle: e.target.value})}
+                    className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-2 text-zinc-100 focus:outline-none focus:border-lime-400"
+                  >
+                    {MUSCLE_GROUPS.map(mg => (
+                      <option key={mg} value={mg}>{mg}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-zinc-400 mb-1.5">Equipamento</label>
+                  <input
+                    type="text"
+                    value={quickExercise.equipment}
+                    onChange={(e) => setQuickExercise({...quickExercise, equipment: e.target.value})}
+                    className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-2 text-zinc-100 focus:outline-none focus:border-lime-400"
+                    placeholder="Ex: Halteres"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-zinc-400 mb-1.5">Link do Vídeo (Opcional)</label>
+                <input
+                  type="url"
+                  value={quickExercise.video_url}
+                  onChange={(e) => setQuickExercise({...quickExercise, video_url: e.target.value})}
+                  className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-2 text-zinc-100 focus:outline-none focus:border-lime-400"
+                  placeholder="Ex: https://youtube.com/..."
+                />
+              </div>
+              <div className="flex gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setIsQuickExerciseModalOpen(false)}
+                  className="flex-1 px-4 py-2 bg-zinc-800 text-zinc-100 font-semibold rounded-xl"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  className="flex-1 px-4 py-2 bg-lime-400 text-zinc-950 font-semibold rounded-xl"
+                >
+                  Cadastrar
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Ver Ficha */}
+      {viewingPlan && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl w-full max-w-2xl max-h-[90vh] flex flex-col shadow-2xl">
+            <div className="flex items-center justify-between p-6 border-b border-zinc-800 shrink-0">
+              <div>
+                <h2 className="text-xl font-bold text-zinc-100">{viewingPlan.name || `Ficha ${viewingPlan.letter}`}</h2>
+                <p className="text-sm text-zinc-400 mt-1">Exercícios da Ficha</p>
+              </div>
+              <button
+                onClick={() => setViewingPlan(null)}
+                className="text-zinc-400 hover:text-zinc-100 transition-colors"
+              >
+                <X className="w-6 h-6" />
+              </button>
+            </div>
+            
+            <div className="p-6 overflow-y-auto">
+              <div className="space-y-3">
+                {viewingExercises.length === 0 ? (
+                  <p className="text-center text-zinc-500 py-4">Nenhum exercício encontrado nesta ficha.</p>
+                ) : (
+                  viewingExercises.map((ex, idx) => (
+                    <div key={ex.id || idx} className="bg-zinc-950 border border-zinc-800 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                      <div>
+                        <h3 className="font-bold text-zinc-100">{ex.exercise?.name || 'Exercício Desconhecido'}</h3>
+                        <p className="text-sm text-zinc-400">{ex.exercise?.target_muscle || '-'}</p>
+                      </div>
+                      <div className="flex flex-wrap gap-3 text-sm">
+                        <span className="bg-zinc-800 px-3 py-1.5 rounded-lg text-white border border-zinc-600 font-bold shadow-sm">
+                          <span className="text-zinc-300 font-medium mr-1">Séries:</span> {ex.sets}
+                        </span>
+                        <span className="bg-zinc-800 px-3 py-1.5 rounded-lg text-white border border-zinc-600 font-bold shadow-sm">
+                          <span className="text-zinc-300 font-medium mr-1">Reps:</span> {ex.reps}
+                        </span>
+                        {ex.weight && (
+                          <span className="bg-zinc-800 px-3 py-1.5 rounded-lg text-white border border-zinc-600 font-bold shadow-sm">
+                            <span className="text-zinc-300 font-medium mr-1">Carga:</span> {ex.weight}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+            
+            <div className="p-6 border-t border-zinc-800 shrink-0 bg-zinc-900/50 flex justify-end">
+              <button
+                onClick={() => setViewingPlan(null)}
+                className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-100 font-semibold rounded-xl transition-colors"
+              >
+                Fechar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
